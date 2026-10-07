@@ -54,6 +54,116 @@ export async function transcribeLocal(
   return normalize(result, audio.length / 16000, language);
 }
 
+
+async function transcribeCloudBlob(
+  blob: Blob,
+  filename: string,
+  language: string,
+  providerKey?: string
+): Promise<Transcript> {
+  const body = new FormData();
+  body.append("file", blob, filename);
+  body.append("language", language);
+  const headers: Record<string, string> = {};
+  if (providerKey?.trim()) headers["X-Provider-Key"] = providerKey.trim();
+
+  const response = await fetch("/api/asr/transcribe", { method: "POST", headers, body });
+  if (!response.ok) throw new Error((await response.text()) || "Cloud ASR недоступен");
+  return response.json();
+}
+
+export async function transcribeCloudFile(
+  file: File,
+  duration: number,
+  language: string,
+  providerKey?: string,
+  onStatus?: (message: string) => void
+): Promise<Transcript> {
+  const {
+    Input,
+    ALL_FORMATS,
+    BlobSource,
+    Output,
+    OggOutputFormat,
+    BufferTarget,
+    Conversion
+  } = await import("mediabunny");
+
+  const chunkDuration = 10 * 60;
+  const overlap = 2;
+  const step = chunkDuration - overlap;
+  const totalChunks = Math.max(1, Math.ceil(Math.max(0, duration - overlap) / step));
+  const merged: TranscriptSegment[] = [];
+  let detectedLanguage = language;
+  let lastAcceptedEnd = -1;
+
+  for (let index = 0, start = 0; start < duration; index++, start += step) {
+    const end = Math.min(duration, start + chunkDuration);
+    onStatus?.("Готовлю аудио " + (index + 1) + "/" + totalChunks + " без загрузки видео в RAM");
+
+    const input = new Input({
+      formats: ALL_FORMATS,
+      source: new BlobSource(file, { maxCacheSize: 8 * 1024 * 1024 })
+    });
+    const target = new BufferTarget();
+    const output = new Output({
+      format: new OggOutputFormat(),
+      target
+    });
+
+    const conversion = await Conversion.init({
+      input,
+      output,
+      tracks: "primary",
+      video: { discard: true },
+      audio: {
+        codec: "opus",
+        bitrate: 24_000,
+        numberOfChannels: 1,
+        sampleRate: 16_000,
+        forceTranscode: true
+      },
+      trim: { start, end },
+      tags: {},
+      showWarnings: false
+    });
+
+    if (!conversion.isValid) {
+      throw new Error("Браузер не может аппаратно/программно подготовить Opus-аудио из этого файла. Используйте Local ASR или готовый транскрипт.");
+    }
+
+    conversion.onProgress = (value: number) => {
+      const pct = Math.round(value * 100);
+      onStatus?.("Готовлю аудио " + (index + 1) + "/" + totalChunks + " · " + pct + "%");
+    };
+    await conversion.execute();
+
+    if (!target.buffer) throw new Error("Не удалось получить аудиофрагмент.");
+    const audioBlob = new Blob([target.buffer], { type: "audio/ogg" });
+
+    onStatus?.("ASR " + (index + 1) + "/" + totalChunks + " · " + (audioBlob.size / 1024 / 1024).toFixed(1) + " MB");
+    const result = await transcribeCloudBlob(audioBlob, "lecture-" + (index + 1) + ".ogg", language, providerKey);
+    if (result.language && result.language !== "unknown") detectedLanguage = result.language;
+
+    for (const segment of result.segments) {
+      const adjusted: TranscriptSegment = {
+        id: "cloud-file-" + index + "-" + segment.id,
+        start: segment.start + start,
+        end: segment.end + start,
+        text: segment.text
+      };
+      if (adjusted.end <= lastAcceptedEnd + 0.35) continue;
+      if (adjusted.start < lastAcceptedEnd - 0.8) continue;
+      merged.push(adjusted);
+      lastAcceptedEnd = Math.max(lastAcceptedEnd, adjusted.end);
+    }
+
+    if (end >= duration) break;
+  }
+
+  return { language: detectedLanguage, duration, segments: merged };
+}
+
 async function transcribeCloudChunk(
   audio: Float32Array,
   language: string,
