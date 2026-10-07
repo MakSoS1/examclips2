@@ -145,9 +145,15 @@ export default function App() {
       for (let i = 0; i < visualCount; i++) {
         setStage("visual", 0.8 + 0.14 * ((i + 1) / visualCount), "Sparse visual analysis " + (i + 1) + "/" + visualCount);
         try {
+          const analysis = await analyzeCandidateVisual(sourceUrl, visualized[i].start, visualized[i].end);
+          const wantsVisual = visualized[i].visualDependency >= 0.55 || analysis.textDetected;
+          analysis.layout = wantsVisual
+            ? (analysis.faceDetected ? "SPEAKER_TOP_SLIDE_BOTTOM" : "SLIDE_FULL")
+            : (analysis.faceDetected ? "SMART_CROP" : "SLIDE_FULL");
+
           visualized[i] = {
             ...visualized[i],
-            visual: await analyzeCandidateVisual(sourceUrl, visualized[i].start, visualized[i].end)
+            visual: analysis
           };
         } catch {
           // Semantic candidate remains usable if optional visual APIs are unavailable.
@@ -419,7 +425,7 @@ export default function App() {
                     <div>
                       <div className="clip-title">{candidate.title}</div>
                       <div className="clip-meta">
-                        {formatDuration(candidate.start)}–{formatDuration(candidate.end)} · {Math.round(candidate.end - candidate.start)} сек · {candidate.visual?.faceDetected ? "speaker detected" : "slide/center layout"}
+                        {formatDuration(candidate.start)}–{formatDuration(candidate.end)} · {Math.round(candidate.end - candidate.start)} сек · {candidate.visual?.layout || "auto layout"}
                       </div>
                       <div className="muted" style={{ fontSize: 13, marginTop: 5 }}>{candidate.reason}</div>
                       <div className="row" style={{ marginTop: 10 }}>
@@ -457,7 +463,10 @@ export default function App() {
                         playsInline
                         onTimeUpdate={onPreviewTime}
                         onLoadedMetadata={() => { if (selected && previewRef.current) previewRef.current.currentTime = selected.start; }}
-                        style={{ objectPosition: selected?.visual?.faceDetected ? Math.round(selected.visual.faceX * 100) + "% center" : "center center" }}
+                        style={{
+                          objectPosition: selected?.visual?.faceDetected ? Math.round(selected.visual.faceX * 100) + "% center" : "center center",
+                          objectFit: selected?.visual?.layout === "SLIDE_FULL" ? "contain" : "cover"
+                        }}
                       />
                     )}
                     {caption && <div className="caption">{caption}</div>}
@@ -466,7 +475,10 @@ export default function App() {
                     <div style={{ marginTop: 14 }}>
                       <strong>{selected.title}</strong>
                       <p className="muted" style={{ fontSize: 13, marginTop: 7 }}>
-                        Visual dependency: {Math.round(selected.visualDependency * 100)}%. Финальный экспорт делает crop и субтитры локально.
+                        Visual dependency: {Math.round(selected.visualDependency * 100)}%.
+                        {" "}Layout: {selected.visual?.layout || "AUTO"}.
+                        {selected.visual?.textDetected ? " На keyframes обнаружен текст/слайд." : ""}
+                        {" "}Финальный экспорт делает композицию и субтитры локально.
                       </p>
                     </div>
                   )}
