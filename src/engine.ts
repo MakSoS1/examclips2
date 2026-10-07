@@ -264,13 +264,23 @@ export async function analyzeCandidateVisual(sourceUrl: string, start: number, e
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("Canvas unavailable");
 
-  type Detector = { detect: (source: CanvasImageSource) => Promise<Array<{ boundingBox: DOMRectReadOnly }>> };
-  const ctor = (window as unknown as { FaceDetector?: new (o?: object) => Detector }).FaceDetector;
-  const detector = ctor ? new ctor({ fastMode: true, maxDetectedFaces: 2 }) : null;
+  type FaceDetectorLike = { detect: (source: CanvasImageSource) => Promise<Array<{ boundingBox: DOMRectReadOnly }>> };
+  type TextDetection = { rawValue?: string; boundingBox: DOMRectReadOnly };
+  type TextDetectorLike = { detect: (source: CanvasImageSource) => Promise<TextDetection[]> };
+
+  const browser = window as unknown as {
+    FaceDetector?: new (o?: object) => FaceDetectorLike;
+    TextDetector?: new () => TextDetectorLike;
+  };
+  const faceDetector = browser.FaceDetector ? new browser.FaceDetector({ fastMode: true, maxDetectedFaces: 2 }) : null;
+  const textDetector = browser.TextDetector ? new browser.TextDetector() : null;
 
   let previous: Uint8ClampedArray | null = null;
   const sceneChanges: number[] = [];
   const faces: Array<{ x: number; y: number }> = [];
+  const textSnippets = new Set<string>();
+  let textAreaRatioTotal = 0;
+  let textSamples = 0;
   const duration = Math.max(1, end - start);
   const count = Math.min(12, Math.max(4, Math.ceil(duration / 6)));
 
@@ -283,9 +293,9 @@ export async function analyzeCandidateVisual(sourceUrl: string, start: number, e
     if (previous && diff > 0.16) sceneChanges.push(time);
     previous = new Uint8ClampedArray(image.data);
 
-    if (detector) {
+    if (faceDetector) {
       try {
-        const found = await detector.detect(canvas);
+        const found = await faceDetector.detect(canvas);
         if (found[0]) {
           const box = found[0].boundingBox;
           faces.push({
@@ -297,12 +307,43 @@ export async function analyzeCandidateVisual(sourceUrl: string, start: number, e
         // Optional native browser detector.
       }
     }
+
+    const shouldReadText = textDetector && (i === 0 || i === count - 1 || diff > 0.16);
+    if (shouldReadText) {
+      try {
+        const foundText = await textDetector.detect(canvas);
+        let area = 0;
+        for (const detection of foundText) {
+          const box = detection.boundingBox;
+          area += Math.max(0, box.width * box.height);
+          const value = String(detection.rawValue || "").trim();
+          if (value && textSnippets.size < 12) textSnippets.add(value.slice(0, 120));
+        }
+        textAreaRatioTotal += Math.min(1, area / (canvas.width * canvas.height));
+        textSamples++;
+      } catch {
+        // Optional TextDetector is not available consistently across browsers.
+      }
+    }
   }
 
   const faceDetected = faces.length >= Math.max(1, Math.floor(count / 3));
   const faceX = faceDetected ? faces.reduce((sum, f) => sum + f.x, 0) / faces.length : 0.5;
   const faceY = faceDetected ? faces.reduce((sum, f) => sum + f.y, 0) / faces.length : 0.5;
-  return { faceDetected, faceX, faceY, sceneChanges, layout: faceDetected ? "SMART_CROP" : "SLIDE_FULL" };
+  const textDensity = textSamples ? textAreaRatioTotal / textSamples : 0;
+  const snippets = [...textSnippets];
+  const textDetected = snippets.length > 0 || textDensity > 0.025;
+
+  return {
+    faceDetected,
+    faceX,
+    faceY,
+    sceneChanges,
+    textDetected,
+    textDensity,
+    textSnippets: snippets,
+    layout: faceDetected ? "SMART_CROP" : "SLIDE_FULL"
+  };
 }
 
 export function transcriptFromText(text: string, duration: number, language = "ru"): Transcript {
