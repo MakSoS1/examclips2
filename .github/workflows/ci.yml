@@ -23,6 +23,8 @@ jobs:
   backend:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      PYTHONPATH: .
     defaults:
       run:
         working-directory: backend

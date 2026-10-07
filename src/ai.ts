@@ -54,7 +54,11 @@ export async function transcribeLocal(
   return normalize(result, audio.length / 16000, language);
 }
 
-export async function transcribeCloud(audio: Float32Array, language: string, providerKey?: string): Promise<Transcript> {
+async function transcribeCloudChunk(
+  audio: Float32Array,
+  language: string,
+  providerKey?: string
+): Promise<Transcript> {
   const body = new FormData();
   body.append("file", encodeWav16k(audio), "lecture.wav");
   body.append("language", language);
@@ -64,6 +68,59 @@ export async function transcribeCloud(audio: Float32Array, language: string, pro
   const response = await fetch("/api/asr/transcribe", { method: "POST", headers, body });
   if (!response.ok) throw new Error((await response.text()) || "Cloud ASR недоступен");
   return response.json();
+}
+
+export async function transcribeCloud(
+  audio: Float32Array,
+  language: string,
+  providerKey?: string,
+  onStatus?: (message: string) => void
+): Promise<Transcript> {
+  // 10 minutes of mono PCM16 at 16 kHz is about 19.2 MB, safely below
+  // the 25 MB provider upload limit. A two-second overlap protects words
+  // that cross chunk boundaries; duplicate overlapping segments are removed.
+  const sampleRate = 16000;
+  const chunkSamples = sampleRate * 10 * 60;
+  const overlapSamples = sampleRate * 2;
+  const step = chunkSamples - overlapSamples;
+  const totalChunks = Math.max(1, Math.ceil(Math.max(0, audio.length - overlapSamples) / step));
+  const merged: TranscriptSegment[] = [];
+  let detectedLanguage = language;
+  let lastAcceptedEnd = -1;
+
+  for (let chunkIndex = 0, startSample = 0; startSample < audio.length; chunkIndex++, startSample += step) {
+    const endSample = Math.min(audio.length, startSample + chunkSamples);
+    const chunk = audio.subarray(startSample, endSample);
+    onStatus?.("Cloud ASR: часть " + (chunkIndex + 1) + " из " + totalChunks);
+
+    const result = await transcribeCloudChunk(chunk, language, providerKey);
+    if (result.language && result.language !== "unknown") detectedLanguage = result.language;
+    const offset = startSample / sampleRate;
+
+    for (const segment of result.segments) {
+      const adjusted: TranscriptSegment = {
+        id: "cloud-" + chunkIndex + "-" + segment.id,
+        start: segment.start + offset,
+        end: segment.end + offset,
+        text: segment.text
+      };
+
+      // Ignore a segment that is fully inside the overlap already emitted.
+      if (adjusted.end <= lastAcceptedEnd + 0.35) continue;
+      if (adjusted.start < lastAcceptedEnd - 0.8) continue;
+
+      merged.push(adjusted);
+      lastAcceptedEnd = Math.max(lastAcceptedEnd, adjusted.end);
+    }
+
+    if (endSample >= audio.length) break;
+  }
+
+  return {
+    language: detectedLanguage,
+    duration: audio.length / sampleRate,
+    segments: merged
+  };
 }
 
 function jsonObject(text: string) {

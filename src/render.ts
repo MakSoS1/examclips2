@@ -38,7 +38,7 @@ async function toMp4(blob: Blob): Promise<Blob> {
   const data = await ffmpeg.readFile("output.mp4");
   const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(String(data));
   ffmpeg.terminate();
-  return new Blob([bytes], { type: "video/mp4" });
+  const copy = new Uint8Array(bytes.byteLength);\n  copy.set(bytes);\n  return new Blob([copy.buffer], { type: "video/mp4" });
 }
 
 export async function renderCandidate(
