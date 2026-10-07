@@ -49,6 +49,9 @@ export interface VisualAnalysis {
   faceX: number;
   faceY: number;
   sceneChanges: number[];
+  textDetected: boolean;
+  textDensity: number;
+  textSnippets: string[];
   layout: LayoutMode;
 }
 
