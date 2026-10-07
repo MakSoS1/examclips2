@@ -8,7 +8,7 @@ import {
   analyzeCandidateVisual, benchmarkDevice, buildLectureMap, extractAudio16k,
   generateCandidates, inspectMedia, saveProject, transcriptFromText
 } from "./engine";
-import { refineCandidatesWithMiniLLM, transcribeCloud, transcribeLocal } from "./ai";
+import { refineCandidatesWithMiniLLM, transcribeCloudFile, transcribeLocal } from "./ai";
 import { downloadBlob, renderCandidate } from "./render";
 
 type ASRMode = "local" | "cloud" | "manual";
@@ -103,13 +103,23 @@ export default function App() {
         setStage("transcribing", 0.55, "Подготавливаю импортированный транскрипт");
         finalTranscript = transcriptFromText(manualTranscript, mediaInfo.duration, language);
       } else {
-        setStage("audio", 0.1, "Извлекаю только аудиодорожку — видео остаётся на устройстве");
-        const audio = await extractAudio16k(file, (p) => setStage("audio", 0.1 + p * 0.25, "Готовлю аудио 16 kHz mono"));
         if (asrMode === "local") {
-          finalTranscript = await transcribeLocal(audio, capabilities, language, (message) => setStage("transcribing", 0.42, message));
+          setStage("audio", 0.1, "Готовлю локальное аудио — видео остаётся на устройстве");
+          const audio = await extractAudio16k(file, (p) =>
+            setStage("audio", 0.1 + p * 0.25, "Готовлю локальное аудио 16 kHz mono")
+          );
+          finalTranscript = await transcribeLocal(audio, capabilities, language, (message) =>
+            setStage("transcribing", 0.42, message)
+          );
         } else {
-          setStage("transcribing", 0.42, "Отправляю только аудиодорожку в ASR");
-          finalTranscript = await transcribeCloud(audio, language, providerKey);
+          setStage("audio", 0.1, "Читаю аудиотрек лениво — исходное видео не загружается в RAM");
+          finalTranscript = await transcribeCloudFile(
+            file,
+            mediaInfo.duration,
+            language,
+            providerKey,
+            (message) => setStage("transcribing", 0.42, message)
+          );
         }
       }
 
