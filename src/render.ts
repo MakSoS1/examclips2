@@ -6,21 +6,87 @@ function captionAt(segments: TranscriptSegment[], time: number) {
   return segments.find((segment) => time >= segment.start && time <= segment.end)?.text || "";
 }
 
-function drawFrame(ctx: CanvasRenderingContext2D, video: HTMLVideoElement, candidate: ClipCandidate, width: number, height: number) {
-  ctx.fillStyle = "#0F1115";
-  ctx.fillRect(0, 0, width, height);
+function drawCover(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  dx: number,
+  dy: number,
+  dw: number,
+  dh: number,
+  focusX = 0.5
+) {
   const sourceRatio = video.videoWidth / video.videoHeight;
-  const targetRatio = width / height;
+  const targetRatio = dw / dh;
   let sx = 0, sy = 0, sw = video.videoWidth, sh = video.videoHeight;
+
   if (sourceRatio > targetRatio) {
     sw = video.videoHeight * targetRatio;
-    const focus = candidate.visual?.faceDetected ? candidate.visual.faceX : 0.5;
-    sx = Math.max(0, Math.min(video.videoWidth - sw, focus * video.videoWidth - sw / 2));
+    sx = Math.max(0, Math.min(video.videoWidth - sw, focusX * video.videoWidth - sw / 2));
   } else {
     sh = video.videoWidth / targetRatio;
     sy = Math.max(0, (video.videoHeight - sh) / 2);
   }
-  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, width, height);
+  ctx.drawImage(video, sx, sy, sw, sh, dx, dy, dw, dh);
+}
+
+function drawContain(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  dx: number,
+  dy: number,
+  dw: number,
+  dh: number
+) {
+  const scale = Math.min(dw / video.videoWidth, dh / video.videoHeight);
+  const width = video.videoWidth * scale;
+  const height = video.videoHeight * scale;
+  const x = dx + (dw - width) / 2;
+  const y = dy + (dh - height) / 2;
+  ctx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight, x, y, width, height);
+}
+
+function drawFrame(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  candidate: ClipCandidate,
+  width: number,
+  height: number
+) {
+  ctx.fillStyle = "#0F1115";
+  ctx.fillRect(0, 0, width, height);
+
+  const layout = candidate.visual?.layout || "SMART_CROP";
+  const focusX = candidate.visual?.faceDetected ? candidate.visual.faceX : 0.5;
+
+  if (layout === "SLIDE_FULL") {
+    // A dimmed cover frame fills the unused vertical background while the
+    // complete source stays readable in the middle.
+    ctx.save();
+    ctx.globalAlpha = 0.28;
+    drawCover(ctx, video, 0, 0, width, height, 0.5);
+    ctx.restore();
+    ctx.fillStyle = "rgba(15,17,21,.48)";
+    ctx.fillRect(0, 0, width, height);
+    drawContain(ctx, video, 48, 190, width - 96, height - 520);
+    return;
+  }
+
+  if (layout === "SPEAKER_TOP_SLIDE_BOTTOM") {
+    const slideHeight = Math.round(height * 0.58);
+    const speakerY = slideHeight + 20;
+    const speakerHeight = height - speakerY;
+
+    ctx.fillStyle = "#0B0D12";
+    ctx.fillRect(0, 0, width, slideHeight);
+    drawContain(ctx, video, 28, 36, width - 56, slideHeight - 72);
+
+    ctx.fillStyle = "#151922";
+    ctx.fillRect(0, slideHeight, width, 20);
+    drawCover(ctx, video, 0, speakerY, width, speakerHeight, focusX);
+    return;
+  }
+
+  drawCover(ctx, video, 0, 0, width, height, focusX);
 }
 
 async function toMp4(blob: Blob): Promise<Blob> {
@@ -58,7 +124,7 @@ export async function renderCandidate(
     video.onerror = () => reject(new Error("Не удалось открыть видео для рендера"));
   });
 
-  const width = 720, height = 1280;
+  const width = 1080, height = 1920;
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
@@ -80,7 +146,7 @@ export async function renderCandidate(
     "video/webm"
   ];
   const mimeType = mimeTypes.find((value) => MediaRecorder.isTypeSupported(value)) || "";
-  const recorder = new MediaRecorder(stream, { mimeType: mimeType || undefined, videoBitsPerSecond: 5_000_000 });
+  const recorder = new MediaRecorder(stream, { mimeType: mimeType || undefined, videoBitsPerSecond: 8_000_000 });
   const chunks: BlobPart[] = [];
   recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
 
@@ -102,9 +168,9 @@ export async function renderCandidate(
           const text = captionAt(transcript, video.currentTime);
           if (text) {
             ctx.save();
-            ctx.font = "600 30px system-ui, sans-serif";
+            ctx.font = "600 44px system-ui, sans-serif";
             ctx.textAlign = "center";
-            const maxWidth = width - 96;
+            const maxWidth = width - 144;
             const words = text.split(/\s+/);
             const lines: string[] = [];
             let line = "";
@@ -117,11 +183,11 @@ export async function renderCandidate(
               if (lines.length >= 2) break;
             }
             if (line && lines.length < 2) lines.push(line);
-            const boxHeight = lines.length * 42 + 28;
+            const boxHeight = lines.length * 58 + 36;
             ctx.fillStyle = "rgba(15,17,21,.8)";
-            ctx.fillRect(32, height - boxHeight - 86, width - 64, boxHeight);
+            ctx.fillRect(48, height - boxHeight - 126, width - 96, boxHeight);
             ctx.fillStyle = "#fff";
-            lines.forEach((value, i) => ctx.fillText(value, width / 2, height - boxHeight - 48 + i * 42));
+            lines.forEach((value, i) => ctx.fillText(value, width / 2, height - boxHeight - 78 + i * 58));
             ctx.restore();
           }
 
